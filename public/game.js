@@ -2,32 +2,29 @@
 const socket = io();
 
 // Game state
-let playerRole = null;
-let currentCombination = [];
-let detectedMoves = [];
+let playerRole = null; // 'player1' or 'player2'
+let currentRole = null; // 'attacker' or 'defender' (changes each round)
 let isTracking = false;
 let cameraInitialized = false;
 
 // Head tracking state with CENTER CALIBRATION
-let centerPosition = null;           // The calibrated center position
-let calibrationSamples = [];         // Samples collected during calibration
-let isCalibrating = false;           // Whether we're currently calibrating
-const CALIBRATION_SAMPLES = 30;      // Number of samples to average for center
-const CALIBRATION_TIME = 1500;       // Time in ms to calibrate (1.5 seconds)
+let centerPosition = null;
+let calibrationSamples = [];
+let isCalibrating = false;
+const CALIBRATION_TIME = 1500;
 
-// Direction detection with DEAD ZONE
-const DEAD_ZONE = 0.04;              // Dead zone around center (normalized 0-1)
-const DIRECTION_THRESHOLD = 0.08;    // Threshold to register a direction (beyond dead zone)
-const HOLD_TIME_REQUIRED = 350;      // ms to confirm direction
+// Direction detection
+const DEAD_ZONE = 0.04;
+const DIRECTION_THRESHOLD = 0.08;
+const REACTION_THRESHOLD = 0.06; // Slightly lower for faster reactions
 
 // Smoothing
 let smoothedPosition = null;
-const SMOOTHING_FACTOR = 0.3;        // Lower = more smoothing
+const SMOOTHING_FACTOR = 0.4; // Faster response for real-time
 
-// Direction state
-let lastDirection = null;
-let directionHoldTime = 0;
-let lastUpdateTime = 0;
+// Current move state
+let currentExpectedMove = null;
+let hasRespondedToMove = false;
 
 // Camera and face detection
 let video = null;
@@ -36,54 +33,27 @@ let ctx = null;
 let faceDetection = null;
 
 // DOM Elements
-const menuScreen = document.getElementById('menuScreen');
-const gameScreen = document.getElementById('gameScreen');
-const createMatchBtn = document.getElementById('createMatchBtn');
-const joinMatchBtn = document.getElementById('joinMatchBtn');
-const joinForm = document.getElementById('joinForm');
-const matchCodeInput = document.getElementById('matchCodeInput');
-const confirmJoinBtn = document.getElementById('confirmJoinBtn');
-const matchCodeDisplay = document.getElementById('matchCodeDisplay');
-const generatedCode = document.getElementById('generatedCode');
-
-// Game elements
-const combinationInput = document.getElementById('combinationInput');
-const waitingScreen = document.getElementById('waitingScreen');
-const countdownScreen = document.getElementById('countdownScreen');
-const trackingScreen = document.getElementById('trackingScreen');
-const watchingScreen = document.getElementById('watchingScreen');
-const resultScreen = document.getElementById('resultScreen');
-const matchEndScreen = document.getElementById('matchEndScreen');
-
-const selectedMoves = document.getElementById('selectedMoves');
-const moveButtons = document.querySelectorAll('.move-btn');
-const clearMovesBtn = document.getElementById('clearMovesBtn');
-const submitCombinationBtn = document.getElementById('submitCombinationBtn');
-const countdownNumber = document.getElementById('countdownNumber');
-const timerDisplay = document.getElementById('timerDisplay');
-const detectedMovesDisplay = document.getElementById('detectedMoves');
 const notification = document.getElementById('notification');
 
 // Initialize Camera and Face Detection
 async function initCamera() {
-    if (cameraInitialized) {
-        return true;
-    }
+    if (cameraInitialized) return true;
 
     try {
-        showNotification('Initializing camera...', 3000);
+        showNotification('Initializing camera...', 2000);
         
         video = document.getElementById('webcamVideo');
         canvas = document.getElementById('faceCanvas');
+        
+        if (!video || !canvas) {
+            console.error('Video or canvas not found');
+            return false;
+        }
+        
         ctx = canvas.getContext('2d');
 
-        // Request camera access
         const stream = await navigator.mediaDevices.getUserMedia({
-            video: { 
-                width: { ideal: 640 },
-                height: { ideal: 480 },
-                facingMode: 'user'
-            }
+            video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
         });
         
         video.srcObject = stream;
@@ -97,35 +67,25 @@ async function initCamera() {
             };
         });
 
-        // Initialize MediaPipe Face Detection
         faceDetection = new FaceDetection({
-            locateFile: (file) => {
-                return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`;
-            }
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
         });
 
-        faceDetection.setOptions({
-            model: 'short',
-            minDetectionConfidence: 0.5
-        });
-
+        faceDetection.setOptions({ model: 'short', minDetectionConfidence: 0.5 });
         faceDetection.onResults(onFaceResults);
 
-        // Start detection loop
         detectFaces();
-
         cameraInitialized = true;
-        showNotification('Camera ready!', 2000);
+        showNotification('Camera ready!', 1500);
         
         return true;
     } catch (error) {
-        console.error('Error initializing camera:', error);
-        showNotification('Error accessing camera. Please allow camera access and refresh.', 5000);
+        console.error('Camera error:', error);
+        showNotification('Camera error. Please allow access and refresh.', 5000);
         return false;
     }
 }
 
-// Face detection loop
 async function detectFaces() {
     if (video && video.readyState >= 2 && faceDetection) {
         await faceDetection.send({ image: video });
@@ -133,9 +93,9 @@ async function detectFaces() {
     requestAnimationFrame(detectFaces);
 }
 
-// Process face detection results
 function onFaceResults(results) {
-    // Clear and draw mirrored video
+    if (!ctx) return;
+    
     ctx.save();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.scale(-1, 1);
@@ -146,19 +106,17 @@ function onFaceResults(results) {
         const detection = results.detections[0];
         const bbox = detection.boundingBox;
         
-        // Get nose position for tracking
         let noseX = 0.5, noseY = 0.5;
         if (detection.landmarks && detection.landmarks.length > 2) {
             const nose = detection.landmarks[2];
-            noseX = 1 - nose.x; // Mirror X
+            noseX = 1 - nose.x;
             noseY = nose.y;
         } else {
-            // Fallback to center of bounding box
             noseX = 1 - bbox.xCenter;
             noseY = bbox.yCenter;
         }
 
-        // Draw face box (mirrored)
+        // Draw face box
         const mirroredX = canvas.width - bbox.xCenter * canvas.width - (bbox.width * canvas.width / 2);
         ctx.strokeStyle = isCalibrating ? '#ffff00' : '#ff6b6b';
         ctx.lineWidth = 3;
@@ -169,550 +127,436 @@ function onFaceResults(results) {
             bbox.height * canvas.height
         );
 
-        // Draw nose tracking point
+        // Draw nose point
         ctx.fillStyle = isCalibrating ? '#ffff00' : '#00ff00';
         ctx.beginPath();
         ctx.arc(noseX * canvas.width, noseY * canvas.height, 10, 0, 2 * Math.PI);
         ctx.fill();
 
-        // Draw center reference if calibrated
+        // Draw center if calibrated
         if (centerPosition && !isCalibrating) {
-            // Draw center point
             ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
             ctx.beginPath();
             ctx.arc(centerPosition.x * canvas.width, centerPosition.y * canvas.height, 8, 0, 2 * Math.PI);
             ctx.fill();
 
-            // Draw dead zone circle
             ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
             ctx.lineWidth = 2;
             ctx.setLineDash([5, 5]);
             ctx.beginPath();
-            ctx.arc(
-                centerPosition.x * canvas.width, 
-                centerPosition.y * canvas.height, 
-                DEAD_ZONE * canvas.width, 
-                0, 2 * Math.PI
-            );
+            ctx.arc(centerPosition.x * canvas.width, centerPosition.y * canvas.height, DEAD_ZONE * canvas.width, 0, 2 * Math.PI);
             ctx.stroke();
             ctx.setLineDash([]);
-
-            // Draw direction threshold circle
-            ctx.strokeStyle = 'rgba(255, 107, 107, 0.3)';
-            ctx.beginPath();
-            ctx.arc(
-                centerPosition.x * canvas.width, 
-                centerPosition.y * canvas.height, 
-                DIRECTION_THRESHOLD * canvas.width, 
-                0, 2 * Math.PI
-            );
-            ctx.stroke();
         }
 
-        // Process position
         if (isCalibrating) {
-            collectCalibrationSample(noseX, noseY);
-        } else if (isTracking && centerPosition) {
-            processHeadPosition(noseX, noseY);
+            calibrationSamples.push({ x: noseX, y: noseY });
+        } else if (isTracking && centerPosition && currentExpectedMove && !hasRespondedToMove) {
+            processHeadMovement(noseX, noseY);
         }
     }
 }
 
-// Start calibration to find center position
 function startCalibration() {
     isCalibrating = true;
     calibrationSamples = [];
     centerPosition = null;
     smoothedPosition = null;
     
-    const calibrationStatus = document.getElementById('calibrationStatus');
-    if (calibrationStatus) {
-        calibrationStatus.textContent = 'Hold still... Calibrating center position...';
-        calibrationStatus.classList.add('calibrating');
+    const status = document.getElementById('calibrationStatus');
+    if (status) {
+        status.textContent = 'Hold still... Calibrating...';
+        status.classList.add('calibrating');
     }
 
-    showNotification('Hold your head still to calibrate...', CALIBRATION_TIME);
-
-    // End calibration after timeout
-    setTimeout(() => {
-        finishCalibration();
-    }, CALIBRATION_TIME);
+    setTimeout(finishCalibration, CALIBRATION_TIME);
 }
 
-// Collect calibration samples
-function collectCalibrationSample(x, y) {
-    calibrationSamples.push({ x, y });
-}
-
-// Finish calibration and compute center
 function finishCalibration() {
     if (calibrationSamples.length > 0) {
-        // Average all samples to get center
         let sumX = 0, sumY = 0;
-        for (const sample of calibrationSamples) {
-            sumX += sample.x;
-            sumY += sample.y;
+        for (const s of calibrationSamples) {
+            sumX += s.x;
+            sumY += s.y;
         }
-        centerPosition = {
-            x: sumX / calibrationSamples.length,
-            y: sumY / calibrationSamples.length
-        };
+        centerPosition = { x: sumX / calibrationSamples.length, y: sumY / calibrationSamples.length };
         smoothedPosition = { ...centerPosition };
-
-        console.log('Calibrated center:', centerPosition);
-        showNotification('Center calibrated! Start moving your head.', 2000);
     } else {
-        // Fallback to screen center
         centerPosition = { x: 0.5, y: 0.5 };
         smoothedPosition = { x: 0.5, y: 0.5 };
-        showNotification('Using default center position.', 2000);
     }
 
     isCalibrating = false;
-    
-    const calibrationStatus = document.getElementById('calibrationStatus');
-    if (calibrationStatus) {
-        calibrationStatus.textContent = 'Center calibrated ✓ Move your head to detect directions';
-        calibrationStatus.classList.remove('calibrating');
+    const status = document.getElementById('calibrationStatus');
+    if (status) {
+        status.textContent = 'Calibrated ✓ React to incoming moves!';
+        status.classList.remove('calibrating');
     }
 }
 
-// Process head position for direction detection
-function processHeadPosition(x, y) {
-    if (!isTracking || !centerPosition || detectedMoves.length >= 4) return;
+function processHeadMovement(x, y) {
+    if (!centerPosition || hasRespondedToMove) return;
 
-    const currentTime = Date.now();
-
-    // Apply smoothing to reduce noise
+    // Smooth the position
     if (smoothedPosition) {
-        smoothedPosition.x = smoothedPosition.x + SMOOTHING_FACTOR * (x - smoothedPosition.x);
-        smoothedPosition.y = smoothedPosition.y + SMOOTHING_FACTOR * (y - smoothedPosition.y);
+        smoothedPosition.x += SMOOTHING_FACTOR * (x - smoothedPosition.x);
+        smoothedPosition.y += SMOOTHING_FACTOR * (y - smoothedPosition.y);
     } else {
         smoothedPosition = { x, y };
     }
 
-    // Calculate displacement from CENTER
     const deltaX = smoothedPosition.x - centerPosition.x;
     const deltaY = smoothedPosition.y - centerPosition.y;
     const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
 
-    // Determine direction based on displacement from CENTER
-    let direction = null;
+    let detectedDirection = null;
 
-    // Only register direction if outside dead zone
-    if (distance > DEAD_ZONE) {
-        // Check if far enough for direction
-        if (distance > DIRECTION_THRESHOLD) {
-            // Determine primary direction based on largest delta
-            if (Math.abs(deltaY) > Math.abs(deltaX)) {
-                direction = deltaY < 0 ? 'up' : 'down';
-            } else {
-                direction = deltaX < 0 ? 'left' : 'right';
-            }
+    if (distance > REACTION_THRESHOLD) {
+        if (Math.abs(deltaY) > Math.abs(deltaX)) {
+            detectedDirection = deltaY < 0 ? 'up' : 'down';
+        } else {
+            detectedDirection = deltaX < 0 ? 'left' : 'right';
         }
     }
 
-    // Update direction indicator
-    const directionIndicator = document.getElementById('directionIndicator');
-    const gazeDirection = document.getElementById('gazeDirection');
-    
-    if (direction) {
-        const directionEmoji = {
-            'up': '⬆️',
-            'down': '⬇️',
-            'left': '⬅️',
-            'right': '➡️'
-        };
+    // Show current detection
+    const indicator = document.getElementById('directionIndicator');
+    if (detectedDirection && indicator) {
+        const emojis = { 'up': '⬆️', 'down': '⬇️', 'left': '⬅️', 'right': '➡️' };
+        indicator.textContent = emojis[detectedDirection];
+        indicator.classList.add('show');
 
-        directionIndicator.textContent = directionEmoji[direction];
-        directionIndicator.classList.add('show');
-        
-        if (gazeDirection) {
-            gazeDirection.textContent = `${direction.toUpperCase()} (${(distance * 100).toFixed(0)}%)`;
-            gazeDirection.classList.add('show');
-        }
-
-        // Check if holding the same direction
-        if (direction === lastDirection) {
-            directionHoldTime += (currentTime - lastUpdateTime);
-
-            if (directionHoldTime >= HOLD_TIME_REQUIRED) {
-                // Only register if it's different from the last registered move
-                const lastRegistered = detectedMoves[detectedMoves.length - 1];
-                if (lastRegistered !== direction) {
-                    detectedMoves.push(direction);
-                    updateDetectedMovesDisplay();
-                    showNotification(`Move ${detectedMoves.length}: ${direction.toUpperCase()} ✓`, 1000);
-
-                    // Flash effect
-                    directionIndicator.style.background = 'rgba(76, 175, 80, 0.8)';
-                    setTimeout(() => {
-                        directionIndicator.style.background = 'rgba(0, 0, 0, 0.6)';
-                    }, 200);
-
-                    // Reset for next move - require returning toward center
-                    directionHoldTime = 0;
-                    lastDirection = null;
-                }
-            }
-        } else {
-            lastDirection = direction;
-            directionHoldTime = 0;
-        }
-    } else {
-        directionIndicator.classList.remove('show');
-        if (gazeDirection) {
-            gazeDirection.textContent = `In center zone`;
-            gazeDirection.classList.remove('show');
-        }
-        lastDirection = null;
-        directionHoldTime = 0;
+        // Lock in the move immediately on first detection (correct or wrong)
+        hasRespondedToMove = true;
+        socket.emit('defendMove', detectedDirection);
+    } else if (indicator) {
+        indicator.classList.remove('show');
     }
-
-    lastUpdateTime = currentTime;
 }
 
-function updateDetectedMovesDisplay() {
-    const slots = detectedMovesDisplay.querySelectorAll('.move-slot');
-    const moveEmojis = {
-        'up': '⬆️',
-        'down': '⬇️',
-        'left': '⬅️',
-        'right': '➡️'
-    };
-
-    slots.forEach((slot, index) => {
-        if (detectedMoves[index]) {
-            slot.textContent = moveEmojis[detectedMoves[index]];
-            slot.classList.add('filled');
-        } else {
-            slot.textContent = '?';
-            slot.classList.remove('filled');
-        }
-    });
-}
-
-// Reset tracking state
-function resetTrackingState() {
-    centerPosition = null;
-    calibrationSamples = [];
-    isCalibrating = false;
-    smoothedPosition = null;
-    lastDirection = null;
-    directionHoldTime = 0;
-    detectedMoves = [];
-}
-
-// Show notification
 function showNotification(message, duration = 3000) {
+    if (!notification) return;
     notification.textContent = message;
     notification.classList.remove('hidden');
-
-    setTimeout(() => {
-        notification.classList.add('hidden');
-    }, duration);
+    setTimeout(() => notification.classList.add(   'hidden'), duration);
 }
 
-// Switch screens
 function showScreen(screenId) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-    document.getElementById(screenId).classList.add('active');
+    const screen = document.getElementById(screenId);
+    if (screen) screen.classList.add('active');
 }
 
 function showGameSection(sectionId) {
     document.querySelectorAll('.game-section').forEach(s => s.classList.add('hidden'));
-    document.getElementById(sectionId).classList.remove('hidden');
+    const section = document.getElementById(sectionId);
+    if (section) section.classList.remove('hidden');
 }
 
-// Update combination display
-function updateCombinationDisplay() {
-    const slots = selectedMoves.querySelectorAll('.move-slot');
-    const moveEmojis = {
-        'up': '⬆️',
-        'down': '⬇️',
-        'left': '⬅️',
-        'right': '➡️'
+function updateScores(scores) {
+    const playerScoreEl = document.getElementById('playerScore');
+    const opponentScoreEl = document.getElementById('opponentScore');
+    
+    if (playerRole === 'player1') {
+        if (playerScoreEl) playerScoreEl.textContent = scores.player1;
+        if (opponentScoreEl) opponentScoreEl.textContent = scores.player2;
+    } else {
+        if (playerScoreEl) playerScoreEl.textContent = scores.player2;
+        if (opponentScoreEl) opponentScoreEl.textContent = scores.player1;
+    }
+}
+
+// Arrow key handling for attacker
+document.addEventListener('keydown', (e) => {
+    if (currentRole !== 'attacker') return;
+    
+    const keyMap = {
+        'ArrowUp': 'up',
+        'ArrowDown': 'down',
+        'ArrowLeft': 'left',
+        'ArrowRight': 'right'
     };
-
-    slots.forEach((slot, index) => {
-        if (currentCombination[index]) {
-            slot.textContent = moveEmojis[currentCombination[index]];
-            slot.classList.add('filled');
-        } else {
-            slot.textContent = '?';
-            slot.classList.remove('filled');
+    
+    const move = keyMap[e.key];
+    if (move) {
+        e.preventDefault();
+        socket.emit('attackMove', move);
+        
+        // Visual feedback
+        const keyId = 'key' + move.charAt(0).toUpperCase() + move.slice(1);
+        const keyEl = document.getElementById(keyId);
+        if (keyEl) {
+            keyEl.classList.add('pressed');
+            setTimeout(() => keyEl.classList.remove('pressed'), 200);
         }
-    });
+    }
+});
 
-    submitCombinationBtn.disabled = currentCombination.length !== 4;
-}
-
-// Event Listeners - Menu
-createMatchBtn.addEventListener('click', () => {
+// Menu buttons
+document.getElementById('createMatchBtn')?.addEventListener('click', () => {
     socket.emit('createMatch');
-    createMatchBtn.disabled = true;
-    joinMatchBtn.disabled = true;
+    document.getElementById('createMatchBtn').disabled = true;
+    document.getElementById('joinMatchBtn').disabled = true;
 });
 
-joinMatchBtn.addEventListener('click', () => {
-    joinForm.classList.remove('hidden');
-    matchCodeInput.focus();
+document.getElementById('joinMatchBtn')?.addEventListener('click', () => {
+    document.getElementById('joinForm')?.classList.remove('hidden');
+    document.getElementById('matchCodeInput')?.focus();
 });
 
-confirmJoinBtn.addEventListener('click', () => {
-    const code = matchCodeInput.value.trim();
-    if (code.length === 6) {
+document.getElementById('confirmJoinBtn')?.addEventListener('click', () => {
+    const code = document.getElementById('matchCodeInput')?.value.trim();
+    if (code && code.length === 6) {
         socket.emit('joinMatch', code);
     } else {
-        showNotification('Please enter a valid 6-character code');
+        showNotification('Enter a valid 6-character code');
     }
 });
 
-matchCodeInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-        confirmJoinBtn.click();
-    }
+document.getElementById('matchCodeInput')?.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') document.getElementById('confirmJoinBtn')?.click();
 });
 
-// Event Listeners - Combination Input
-moveButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-        if (currentCombination.length < 4) {
-            currentCombination.push(btn.dataset.move);
-            updateCombinationDisplay();
-        }
-    });
-});
-
-clearMovesBtn.addEventListener('click', () => {
-    currentCombination = [];
-    updateCombinationDisplay();
-});
-
-submitCombinationBtn.addEventListener('click', () => {
-    if (currentCombination.length === 4) {
-        socket.emit('submitCombination', currentCombination);
-    }
-});
-
-// Event Listeners - Match End
-document.getElementById('rematchBtn').addEventListener('click', function() {
+document.getElementById('rematchBtn')?.addEventListener('click', function() {
     socket.emit('proposeRematch');
     this.disabled = true;
-    document.getElementById('rematchStatus').classList.remove('hidden');
-    document.getElementById('rematchStatus').textContent = 'Waiting for opponent...';
+    const status = document.getElementById('rematchStatus');
+    if (status) {
+        status.classList.remove('hidden');
+        status.textContent = 'Waiting for opponent...';
+    }
 });
 
-document.getElementById('exitMatchBtn').addEventListener('click', () => {
-    location.reload();
-});
+document.getElementById('exitMatchBtn')?.addEventListener('click', () => location.reload());
 
-// Socket Event Handlers
+// Socket events
 socket.on('matchCreated', ({ matchCode }) => {
     playerRole = 'player1';
-    generatedCode.textContent = matchCode;
-    matchCodeDisplay.classList.remove('hidden');
+    const codeEl = document.getElementById('generatedCode');
+    if (codeEl) codeEl.textContent = matchCode;
+    document.getElementById('matchCodeDisplay')?.classList.remove('hidden');
 });
 
-socket.on('joinError', ({ message }) => {
-    showNotification(message);
-});
+socket.on('joinError', ({ message }) => showNotification(message));
 
-socket.on('matchStarted', ({ matchCode }) => {
+socket.on('matchStarted', () => {
     showScreen('gameScreen');
     showNotification('Match started!');
 });
 
-socket.on('inputCombination', ({ round }) => {
-    document.getElementById('currentRound').textContent = round;
-    currentCombination = [];
-    updateCombinationDisplay();
-    showGameSection('combinationInput');
-});
-
-socket.on('waitingForCombination', ({ round }) => {
-    document.getElementById('currentRound').textContent = round;
-    document.getElementById('waitingText').textContent = 'Waiting for opponent to set combination...';
-    showGameSection('waitingScreen');
+socket.on('roundStart', async ({ round, totalRounds, role, countdownSeconds }) => {
+    currentRole = role;
     
-    // Pre-initialize camera while waiting
-    if (!cameraInitialized) {
-        initCamera();
+    document.getElementById('currentRound').textContent = round;
+    document.getElementById('totalRounds').textContent = totalRounds;
+    
+    const announcement = document.getElementById('roleAnnouncement');
+    const description = document.getElementById('roleDescription');
+    
+    if (role === 'attacker') {
+        if (announcement) announcement.textContent = '⚔️ You are ATTACKING!';
+        if (description) description.textContent = 'Use arrow keys to send moves!';
+    } else {
+        if (announcement) announcement.textContent = '🛡️ You are DEFENDING!';
+        if (description) description.textContent = 'React to moves with your head!';
+        
+        // Start camera early for defender
+        if (!cameraInitialized) {
+            await initCamera();
+        }
     }
+    
+    showGameSection('countdownScreen');
 });
 
-socket.on('getReady', async ({ round, countdownSeconds }) => {
-    showGameSection('countdownScreen');
+socket.on('countdown', ({ count }) => {
+    const el = document.getElementById('countdownNumber');
+    if (el) el.textContent = count === 0 ? 'GO!' : count;
+});
+
+socket.on('startAttacking', ({ duration, round }) => {
+    currentRole = 'attacker';
+    showGameSection('attackerScreen');
     
-    // Initialize camera if not already done
+    const lastMove = document.getElementById('lastMoveSent');
+    if (lastMove) lastMove.textContent = '-';
+    
+    document.getElementById('opponentReaction')?.classList.add('hidden');
+});
+
+socket.on('startDefending', async ({ duration, round }) => {
+    currentRole = 'defender';
+    showGameSection('defenderScreen');
+    
     if (!cameraInitialized) {
         await initCamera();
     }
     
-    // Start calibration during countdown
-    resetTrackingState();
+    // Start calibration and tracking
     startCalibration();
+    setTimeout(() => {
+        isTracking = true;
+    }, CALIBRATION_TIME);
+    
+    const incoming = document.getElementById('incomingMove');
+    if (incoming) incoming.textContent = '-';
 });
 
-socket.on('countdown', ({ count }) => {
-    countdownNumber.textContent = count;
-    if (count === 0) {
-        countdownNumber.textContent = 'GO!';
+socket.on('roundTimer', ({ timeLeft }) => {
+    const timer = document.getElementById('roundTimer');
+    if (timer) timer.textContent = timeLeft;
+});
+
+socket.on('moveSent', ({ direction }) => {
+    const emojis = { 'up': '⬆️', 'down': '⬇️', 'left': '⬅️', 'right': '➡️' };
+    const lastMove = document.getElementById('lastMoveSent');
+    if (lastMove) lastMove.textContent = emojis[direction];
+});
+
+socket.on('incomingMove', ({ direction, reactionTime }) => {
+    currentExpectedMove = direction;
+    hasRespondedToMove = false;
+    
+    const emojis = { 'up': '⬆️', 'down': '⬇️', 'left': '⬅️', 'right': '➡️' };
+    const incoming = document.getElementById('incomingMove');
+    if (incoming) {
+        incoming.textContent = emojis[direction];
+        incoming.classList.add('pulse');
+        setTimeout(() => incoming.classList.remove('pulse'), 300);
+    }
+    
+    // Show reaction timer
+    const timerEl = document.getElementById('reactionTimer');
+    const barEl = document.getElementById('reactionTimerBar');
+    if (timerEl && barEl) {
+        timerEl.classList.remove('hidden');
+        barEl.style.animation = 'none';
+        barEl.offsetHeight; // Trigger reflow
+        barEl.style.animation = `shrink ${reactionTime}ms linear forwards`;
     }
 });
 
-socket.on('startGuessing', async ({ duration }) => {
-    showGameSection('trackingScreen');
+socket.on('moveMissed', ({ direction }) => {
+    currentExpectedMove = null;
+    hasRespondedToMove = false;
+    
+    const incoming = document.getElementById('incomingMove');
+    if (incoming) incoming.textContent = '❌';
+    
+    const feedback = document.getElementById('defenderFeedback');
+    const text = document.getElementById('feedbackText');
+    if (feedback && text) {
+        text.textContent = 'MISSED!';
+        feedback.className = 'defender-feedback incorrect';
+        feedback.classList.remove('hidden');
+        setTimeout(() => feedback.classList.add('hidden'), 1000);
+    }
+    
+    document.getElementById('reactionTimer')?.classList.add('hidden');
+});
 
-    // Reset detected moves
-    detectedMoves = [];
-    lastDirection = null;
-    directionHoldTime = 0;
-    lastUpdateTime = Date.now();
-    updateDetectedMovesDisplay();
-
-    // Start tracking (calibration should be done by now)
-    isTracking = true;
-
-    // Timer countdown
-    let timeLeft = duration;
-    timerDisplay.textContent = timeLeft;
-
-    const timerInterval = setInterval(() => {
-        timeLeft--;
-        timerDisplay.textContent = timeLeft;
-
-        if (timeLeft <= 0) {
-            clearInterval(timerInterval);
-            isTracking = false;
-
-            // Fill remaining moves with 'none' if not detected
-            while (detectedMoves.length < 4) {
-                detectedMoves.push('none');
-            }
-
-            socket.emit('submitGuess', detectedMoves);
+socket.on('moveResult', ({ expected, detected, correct, reactionTime, scores }) => {
+    currentExpectedMove = null;
+    updateScores(scores);
+    
+    const feedback = document.getElementById('defenderFeedback');
+    const text = document.getElementById('feedbackText');
+    if (feedback && text) {
+        if (correct) {
+            text.textContent = `✓ ${reactionTime}ms`;
+            feedback.className = 'defender-feedback correct';
+        } else {
+            text.textContent = '✗ Wrong move!';
+            feedback.className = 'defender-feedback incorrect';
         }
-    }, 1000);
+        feedback.classList.remove('hidden');
+        setTimeout(() => feedback.classList.add('hidden'), 1000);
+    }
+    
+    document.getElementById('reactionTimer')?.classList.add('hidden');
 });
 
-socket.on('watchingOpponent', ({ round }) => {
-    const yourCombination = document.getElementById('yourCombination');
-    const slots = yourCombination.querySelectorAll('.move-slot');
-    const moveEmojis = {
-        'up': '⬆️',
-        'down': '⬇️',
-        'left': '⬅️',
-        'right': '➡️'
-    };
-
-    slots.forEach((slot, index) => {
-        slot.textContent = moveEmojis[currentCombination[index]] || '?';
-    });
-
-    showGameSection('watchingScreen');
+socket.on('opponentResult', ({ expected, detected, correct, scores }) => {
+    updateScores(scores);
+    
+    const reaction = document.getElementById('opponentReaction');
+    const result = document.getElementById('reactionResult');
+    if (reaction && result) {
+        result.textContent = correct ? '✓ Opponent matched!' : '✗ Opponent missed!';
+        result.className = correct ? 'correct' : 'incorrect';
+        reaction.classList.remove('hidden');
+        setTimeout(() => reaction.classList.add('hidden'), 1500);
+    }
 });
 
-socket.on('opponentGuessing', ({ duration }) => {
-    let timeLeft = duration + 3;
-    const watchTimer = document.getElementById('watchTimer');
-    watchTimer.textContent = timeLeft;
-
-    const timerInterval = setInterval(() => {
-        timeLeft--;
-        watchTimer.textContent = Math.max(0, timeLeft);
-
-        if (timeLeft <= 0) {
-            clearInterval(timerInterval);
-        }
-    }, 1000);
+socket.on('opponentMissed', ({ direction }) => {
+    const reaction = document.getElementById('opponentReaction');
+    const result = document.getElementById('reactionResult');
+    if (reaction && result) {
+        result.textContent = '✗ Opponent too slow!';
+        result.className = 'incorrect';
+        reaction.classList.remove('hidden');
+        setTimeout(() => reaction.classList.add('hidden'), 1500);
+    }
 });
 
-socket.on('roundResult', ({ round, combination, guesses, results, correctMoves, scores }) => {
-    showGameSection('resultScreen');
+socket.on('roundEnd', ({ round, scores }) => {
     isTracking = false;
-
+    currentExpectedMove = null;
+    
+    showGameSection('roundEndScreen');
+    
     if (playerRole === 'player1') {
-        document.getElementById('playerScore').textContent = scores.player1;
-        document.getElementById('opponentScore').textContent = scores.player2;
+        document.getElementById('roundYourScore').textContent = scores.player1;
+        document.getElementById('roundOpponentScore').textContent = scores.player2;
     } else {
-        document.getElementById('playerScore').textContent = scores.player2;
-        document.getElementById('opponentScore').textContent = scores.player1;
+        document.getElementById('roundYourScore').textContent = scores.player2;
+        document.getElementById('roundOpponentScore').textContent = scores.player1;
     }
-
-    const resultRows = document.getElementById('resultRows');
-    const moveEmojis = {
-        'up': '⬆️',
-        'down': '⬇️',
-        'left': '⬅️',
-        'right': '➡️',
-        'none': '❌'
-    };
-
-    resultRows.innerHTML = results.map((result, index) => `
-        <div class="result-row">
-            <span>${index + 1}</span>
-            <span>${moveEmojis[result.expected]}</span>
-            <span>${moveEmojis[result.guessed]}</span>
-            <span class="${result.correct ? 'result-correct' : 'result-incorrect'}">
-                ${result.correct ? '✓' : '✗'}
-            </span>
-        </div>
-    `).join('');
-
-    document.getElementById('roundScore').textContent = `${correctMoves}/4 correct!`;
-    document.getElementById('nextRoundText').textContent = 'Next round starting...';
 });
 
 socket.on('matchEnd', ({ scores, winner }) => {
-    showGameSection('matchEndScreen');
     isTracking = false;
-
-    let isWinner;
+    showGameSection('matchEndScreen');
+    
     if (playerRole === 'player1') {
         document.getElementById('finalPlayerScore').textContent = scores.player1;
         document.getElementById('finalOpponentScore').textContent = scores.player2;
-        isWinner = winner === 'player1';
     } else {
         document.getElementById('finalPlayerScore').textContent = scores.player2;
         document.getElementById('finalOpponentScore').textContent = scores.player1;
-        isWinner = winner === 'player2';
     }
-
-    const resultTitle = document.getElementById('matchResultTitle');
+    
+    const title = document.getElementById('matchResultTitle');
+    const isWinner = (playerRole === 'player1' && winner === 'player1') || 
+                     (playerRole === 'player2' && winner === 'player2');
+    
     if (winner === 'tie') {
-        resultTitle.textContent = "It's a Tie!";
-        resultTitle.className = '';
+        title.textContent = "It's a Tie!";
+        title.className = '';
     } else if (isWinner) {
-        resultTitle.textContent = 'You Win! 🎉';
-        resultTitle.className = 'winner';
+        title.textContent = 'You Win! 🎉';
+        title.className = 'winner';
     } else {
-        resultTitle.textContent = 'You Lose 😢';
-        resultTitle.className = 'loser';
+        title.textContent = 'You Lose 😢';
+        title.className = 'loser';
     }
-
+    
     document.getElementById('rematchBtn').disabled = false;
-    document.getElementById('rematchStatus').classList.add('hidden');
+    document.getElementById('rematchStatus')?.classList.add('hidden');
 });
 
-socket.on('rematchProposed', ({ by }) => {
-    showNotification('Opponent wants a rematch!');
-});
+socket.on('rematchProposed', () => showNotification('Opponent wants a rematch!'));
 
 socket.on('rematchStarting', () => {
     showNotification('Rematch starting!');
-    currentCombination = [];
-    detectedMoves = [];
     document.getElementById('playerScore').textContent = '0';
     document.getElementById('opponentScore').textContent = '0';
 });
 
 socket.on('opponentDisconnected', () => {
     showNotification('Opponent disconnected!');
-    setTimeout(() => {
-        location.reload();
-    }, 2000);
+    setTimeout(() => location.reload(), 2000);
 });
 
-// Initialize
-console.log('Shadow Boxing Game initialized with center calibration');
+console.log('Shadow Boxing Real-Time Game initialized');

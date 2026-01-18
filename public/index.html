@@ -17,7 +17,7 @@
         <!-- Main Menu Screen -->
         <div id="menuScreen" class="screen active">
             <h1>🥊 Shadow Boxing</h1>
-            <p class="subtitle">Test your reflexes with head tracking!</p>
+            <p class="subtitle">Real-time head tracking battle!</p>
 
             <div class="menu-buttons">
                 <button id="createMatchBtn" class="btn btn-primary">Create Match</button>
@@ -40,14 +40,16 @@
         <div id="gameScreen" class="screen">
             <div class="game-header">
                 <div class="player-info">
-                    <span class="player-label">You</span>
+                    <span class="player-label" id="yourLabel">You</span>
                     <span id="playerScore" class="score">0</span>
                 </div>
                 <div class="round-info">
-                    <span>Round</span>
-                    <span id="currentRound">1</span>
-                    <span>/</span>
-                    <span id="totalRounds">3</span>
+                    <div class="timer-display">
+                        <span id="roundTimer">30</span>s
+                    </div>
+                    <div class="round-counter">
+                        Round <span id="currentRound">1</span>/<span id="totalRounds">4</span>
+                    </div>
                 </div>
                 <div class="player-info">
                     <span class="player-label">Opponent</span>
@@ -56,31 +58,6 @@
             </div>
 
             <div id="gameContent">
-                <!-- Combination Input (Player 1) -->
-                <div id="combinationInput" class="game-section hidden">
-                    <h2>Input Your Combination</h2>
-                    <p>Select 4 moves for your opponent to guess</p>
-
-                    <div id="selectedMoves" class="selected-moves">
-                        <div class="move-slot" data-index="0">?</div>
-                        <div class="move-slot" data-index="1">?</div>
-                        <div class="move-slot" data-index="2">?</div>
-                        <div class="move-slot" data-index="3">?</div>
-                    </div>
-
-                    <div class="move-buttons">
-                        <button class="move-btn" data-move="up">⬆️ Up</button>
-                        <button class="move-btn" data-move="down">⬇️ Down</button>
-                        <button class="move-btn" data-move="left">⬅️ Left</button>
-                        <button class="move-btn" data-move="right">➡️ Right</button>
-                    </div>
-
-                    <div class="action-buttons">
-                        <button id="clearMovesBtn" class="btn btn-secondary">Clear</button>
-                        <button id="submitCombinationBtn" class="btn btn-primary" disabled>Submit</button>
-                    </div>
-                </div>
-
                 <!-- Waiting Screen -->
                 <div id="waitingScreen" class="game-section hidden">
                     <div class="waiting-animation">
@@ -91,61 +68,78 @@
 
                 <!-- Countdown Screen -->
                 <div id="countdownScreen" class="game-section hidden">
-                    <h2>Get Ready!</h2>
+                    <h2 id="roleAnnouncement">Get Ready!</h2>
                     <div id="countdownNumber" class="countdown-number">3</div>
-                    <p>Move your head to match the combination!</p>
+                    <p id="roleDescription">Prepare for the round...</p>
                 </div>
 
-                <!-- Head Tracking Screen (Player 2) -->
-                <div id="trackingScreen" class="game-section hidden">
-                    <div class="tracking-container">
-                        <video id="webcamVideo" autoplay playsinline muted></video>
-                        <canvas id="faceCanvas"></canvas>
-                        <div id="centerIndicator" class="center-indicator"></div>
-                        <div id="directionIndicator" class="direction-indicator"></div>
-                        <div id="gazeDirection" class="gaze-direction"></div>
-                    </div>
+                <!-- Attacker Screen -->
+                <div id="attackerScreen" class="game-section hidden">
+                    <h2>⚔️ YOU ARE ATTACKING</h2>
+                    <p class="instructions">Press arrow keys to send moves!</p>
 
-                    <div class="tracking-info">
-                        <div id="timerDisplay" class="timer">8</div>
-                        <div id="detectedMoves" class="detected-moves">
-                            <div class="move-slot detected" data-index="0">?</div>
-                            <div class="move-slot detected" data-index="1">?</div>
-                            <div class="move-slot detected" data-index="2">?</div>
-                            <div class="move-slot detected" data-index="3">?</div>
+                    <div class="arrow-keys-display">
+                        <div class="key-row">
+                            <div class="arrow-key" id="keyUp">⬆️</div>
+                        </div>
+                        <div class="key-row">
+                            <div class="arrow-key" id="keyLeft">⬅️</div>
+                            <div class="arrow-key" id="keyDown">⬇️</div>
+                            <div class="arrow-key" id="keyRight">➡️</div>
                         </div>
                     </div>
 
-                    <p id="trackingInstructions">Move your head in directions: UP, DOWN, LEFT, RIGHT</p>
-                    <p id="calibrationStatus" class="calibration-status">Calibrating center position...</p>
-                </div>
-
-                <!-- Watching Opponent Screen (Player 1) -->
-                <div id="watchingScreen" class="game-section hidden">
-                    <h2>Opponent is Guessing</h2>
-                    <p>Your combination:</p>
-                    <div id="yourCombination" class="selected-moves">
-                        <div class="move-slot">?</div>
-                        <div class="move-slot">?</div>
-                        <div class="move-slot">?</div>
-                        <div class="move-slot">?</div>
+                    <div class="last-move-sent">
+                        <p>Last move sent:</p>
+                        <div id="lastMoveSent" class="big-move">-</div>
                     </div>
-                    <div id="watchTimer" class="timer">8</div>
+
+                    <div id="opponentReaction" class="opponent-reaction hidden">
+                        <span id="reactionResult"></span>
+                    </div>
                 </div>
 
-                <!-- Round Result Screen -->
-                <div id="resultScreen" class="game-section hidden">
-                    <h2>Round Result</h2>
-                    <div class="result-comparison">
-                        <div class="result-row header">
-                            <span>Move</span>
-                            <span>Expected</span>
-                            <span>Guessed</span>
-                            <span>Result</span>
+                <!-- Defender Screen -->
+                <div id="defenderScreen" class="game-section hidden">
+                    <h2>🛡️ YOU ARE DEFENDING</h2>
+
+                    <div class="defender-layout">
+                        <div class="incoming-move-display">
+                            <p>INCOMING MOVE:</p>
+                            <div id="incomingMove" class="incoming-move">-</div>
+                            <div id="reactionTimer" class="reaction-timer hidden">
+                                <div id="reactionTimerBar" class="reaction-timer-bar"></div>
+                            </div>
                         </div>
-                        <div id="resultRows"></div>
+
+                        <div class="tracking-container">
+                            <video id="webcamVideo" autoplay playsinline muted></video>
+                            <canvas id="faceCanvas"></canvas>
+                            <div id="directionIndicator" class="direction-indicator"></div>
+                        </div>
+
+                        <div id="defenderFeedback" class="defender-feedback hidden">
+                            <span id="feedbackText"></span>
+                        </div>
                     </div>
-                    <div id="roundScore" class="round-score"></div>
+
+                    <p id="calibrationStatus" class="calibration-status">Calibrating...</p>
+                </div>
+
+                <!-- Round End Screen -->
+                <div id="roundEndScreen" class="game-section hidden">
+                    <h2>Round Complete!</h2>
+                    <div class="round-scores">
+                        <div class="score-display">
+                            <span>You</span>
+                            <span id="roundYourScore" class="big-score">0</span>
+                        </div>
+                        <div class="vs">-</div>
+                        <div class="score-display">
+                            <span>Opponent</span>
+                            <span id="roundOpponentScore" class="big-score">0</span>
+                        </div>
+                    </div>
                     <p id="nextRoundText">Next round starting...</p>
                 </div>
 
