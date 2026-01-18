@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shadow Boxing Game</title>
+    <link rel="stylesheet" href="styles.css">
+    <!-- MediaPipe for face detection -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js"
+        crossorigin="anonymous"></script>
+</head>
+
+<body>
+    <div class="container">
+        <!-- Main Menu Screen -->
+        <div id="menuScreen" class="screen active">
+            <h1>🥊 Shadow Boxing</h1>
+            <p class="subtitle">Test your reflexes with head tracking!</p>
+
+            <div class="menu-buttons">
+                <button id="createMatchBtn" class="btn btn-primary">Create Match</button>
+                <button id="joinMatchBtn" class="btn btn-secondary">Join Match</button>
+            </div>
+
+            <div id="joinForm" class="hidden">
+                <input type="text" id="matchCodeInput" placeholder="Enter Match Code" maxlength="6">
+                <button id="confirmJoinBtn" class="btn btn-primary">Join</button>
+            </div>
+
+            <div id="matchCodeDisplay" class="hidden">
+                <p>Your Match Code:</p>
+                <h2 id="generatedCode"></h2>
+                <p class="waiting-text">Waiting for opponent...</p>
+            </div>
+        </div>
+
+        <!-- Game Screen -->
+        <div id="gameScreen" class="screen">
+            <div class="game-header">
+                <div class="player-info">
+                    <span class="player-label">You</span>
+                    <span id="playerScore" class="score">0</span>
+                </div>
+                <div class="round-info">
+                    <span>Round</span>
+                    <span id="currentRound">1</span>
+                    <span>/</span>
+                    <span id="totalRounds">3</span>
+                </div>
+                <div class="player-info">
+                    <span class="player-label">Opponent</span>
+                    <span id="opponentScore" class="score">0</span>
+                </div>
+            </div>
+
+            <div id="gameContent">
+                <!-- Combination Input (Player 1) -->
+                <div id="combinationInput" class="game-section hidden">
+                    <h2>Input Your Combination</h2>
+                    <p>Select 4 moves for your opponent to guess</p>
+
+                    <div id="selectedMoves" class="selected-moves">
+                        <div class="move-slot" data-index="0">?</div>
+                        <div class="move-slot" data-index="1">?</div>
+                        <div class="move-slot" data-index="2">?</div>
+                        <div class="move-slot" data-index="3">?</div>
+                    </div>
+
+                    <div class="move-buttons">
+                        <button class="move-btn" data-move="up">⬆️ Up</button>
+                        <button class="move-btn" data-move="down">⬇️ Down</button>
+                        <button class="move-btn" data-move="left">⬅️ Left</button>
+                        <button class="move-btn" data-move="right">➡️ Right</button>
+                    </div>
+
+                    <div class="action-buttons">
+                        <button id="clearMovesBtn" class="btn btn-secondary">Clear</button>
+                        <button id="submitCombinationBtn" class="btn btn-primary" disabled>Submit</button>
+                    </div>
+                </div>
+
+                <!-- Waiting Screen -->
+                <div id="waitingScreen" class="game-section hidden">
+                    <div class="waiting-animation">
+                        <div class="spinner"></div>
+                    </div>
+                    <h2 id="waitingText">Waiting for opponent...</h2>
+                </div>
+
+                <!-- Countdown Screen -->
+                <div id="countdownScreen" class="game-section hidden">
+                    <h2>Get Ready!</h2>
+                    <div id="countdownNumber" class="countdown-number">3</div>
+                    <p>Move your head to match the combination!</p>
+                </div>
+
+                <!-- Head Tracking Screen (Player 2) -->
+                <div id="trackingScreen" class="game-section hidden">
+                    <div class="tracking-container">
+                        <video id="webcamVideo" autoplay playsinline muted></video>
+                        <canvas id="faceCanvas"></canvas>
+                        <div id="centerIndicator" class="center-indicator"></div>
+                        <div id="directionIndicator" class="direction-indicator"></div>
+                        <div id="gazeDirection" class="gaze-direction"></div>
+                    </div>
+
+                    <div class="tracking-info">
+                        <div id="timerDisplay" class="timer">8</div>
+                        <div id="detectedMoves" class="detected-moves">
+                            <div class="move-slot detected" data-index="0">?</div>
+                            <div class="move-slot detected" data-index="1">?</div>
+                            <div class="move-slot detected" data-index="2">?</div>
+                            <div class="move-slot detected" data-index="3">?</div>
+                        </div>
+                    </div>
+
+                    <p id="trackingInstructions">Move your head in directions: UP, DOWN, LEFT, RIGHT</p>
+                    <p id="calibrationStatus" class="calibration-status">Calibrating center position...</p>
+                </div>
+
+                <!-- Watching Opponent Screen (Player 1) -->
+                <div id="watchingScreen" class="game-section hidden">
+                    <h2>Opponent is Guessing</h2>
+                    <p>Your combination:</p>
+                    <div id="yourCombination" class="selected-moves">
+                        <div class="move-slot">?</div>
+                        <div class="move-slot">?</div>
+                        <div class="move-slot">?</div>
+                        <div class="move-slot">?</div>
+                    </div>
+                    <div id="watchTimer" class="timer">8</div>
+                </div>
+
+                <!-- Round Result Screen -->
+                <div id="resultScreen" class="game-section hidden">
+                    <h2>Round Result</h2>
+                    <div class="result-comparison">
+                        <div class="result-row header">
+                            <span>Move</span>
+                            <span>Expected</span>
+                            <span>Guessed</span>
+                            <span>Result</span>
+                        </div>
+                        <div id="resultRows"></div>
+                    </div>
+                    <div id="roundScore" class="round-score"></div>
+                    <p id="nextRoundText">Next round starting...</p>
+                </div>
+
+                <!-- Match End Screen -->
+                <div id="matchEndScreen" class="game-section hidden">
+                    <h2 id="matchResultTitle">Match Over!</h2>
+                    <div class="final-scores">
+                        <div class="final-score">
+                            <span>You</span>
+                            <span id="finalPlayerScore">0</span>
+                        </div>
+                        <div class="vs">VS</div>
+                        <div class="final-score">
+                            <span>Opponent</span>
+                            <span id="finalOpponentScore">0</span>
+                        </div>
+                    </div>
+                    <div class="rematch-section">
+                        <button id="rematchBtn" class="btn btn-primary">Propose Rematch</button>
+                        <p id="rematchStatus" class="hidden">Waiting for opponent...</p>
+                    </div>
+                    <button id="exitMatchBtn" class="btn btn-secondary">Exit to Menu</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Notification -->
+        <div id="notification" class="notification hidden"></div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="game.js"></script>
+</body>
+
+</html>
